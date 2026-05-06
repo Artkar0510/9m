@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import DESCENDING, ReturnDocument
 
@@ -15,6 +15,7 @@ from schemas.likes import (
 )
 from utils.auth import get_current_user
 from utils.helpers import document_to_dict
+from utils.rate_limit import limiter
 
 router = APIRouter()
 
@@ -22,7 +23,9 @@ _col = settings.mongodb.collections
 
 
 @router.get("/films/{film_id}/ratings/stats", response_model=FilmRatingStats)
+@limiter.limit("60/minute")
 async def get_film_rating_stats(
+    request: Request,
     film_id: str,
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):

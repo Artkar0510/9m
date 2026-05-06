@@ -4,12 +4,41 @@ services:
   mongodb:
     image: mongo:7.0
     container_name: ugc_mongodb
+    entrypoint:
+      - bash
+      - -c
+      - |
+        [ -f /data/db/mongo-keyfile ] || (openssl rand -base64 756 | tr -d '\n' > /data/db/mongo-keyfile && chmod 400 /data/db/mongo-keyfile)
+        chown mongodb:mongodb /data/db/mongo-keyfile
+        exec docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all --keyFile /data/db/mongo-keyfile
     ports:
       - "${MONGODB__PORT:-27017}:27017"
     volumes:
       - mongodb_data:/data/db
     environment:
       MONGO_INITDB_DATABASE: ${MONGODB__DB:-ugc_db}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGODB__USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB__PASSWORD}
+    healthcheck:
+      test: >-
+        mongosh -u $$MONGO_INITDB_ROOT_USERNAME -p $$MONGO_INITDB_ROOT_PASSWORD
+        --authenticationDatabase admin --quiet --eval
+        "try{rs.status().ok}catch(e){rs.initiate({_id:'rs0',members:[{_id:0,host:'${MONGODB__HOST:-mongodb}:${MONGODB__PORT:-27017}'}]}).ok}"
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: ugc_redis
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   app:
     build: .
@@ -18,17 +47,26 @@ services:
       - "${APP_PORT:-8000}:8000"
     environment:
       MONGODB__HOST: ${MONGODB__HOST:-mongodb}
-      MONGODB__PORT: ${MONGODB__PORT:-27017}
+      MONGODB__PORT: 27017
+      MONGODB__USER: ${MONGODB__USER}
+      MONGODB__PASSWORD: ${MONGODB__PASSWORD}
       MONGODB__DB: ${MONGODB__DB:-ugc_db}
       MONGODB__TEST_DB: ${MONGODB__TEST_DB:-ugc_test_db}
       MONGODB__COLLECTIONS__FILM_RATINGS: ${MONGODB__COLLECTIONS__FILM_RATINGS:-film_ratings}
       MONGODB__COLLECTIONS__REVIEWS: ${MONGODB__COLLECTIONS__REVIEWS:-reviews}
       MONGODB__COLLECTIONS__REVIEW_LIKES: ${MONGODB__COLLECTIONS__REVIEW_LIKES:-review_likes}
       MONGODB__COLLECTIONS__BOOKMARKS: ${MONGODB__COLLECTIONS__BOOKMARKS:-bookmarks}
+      REDIS__HOST: ${REDIS__HOST:-redis}
+      REDIS__PORT: ${REDIS__PORT:-6379}
       AUTH__SERVICE_URL: ${AUTH__SERVICE_URL:-http://auth-service:8001}
       AUTH__INTROSPECT_PATH: ${AUTH__INTROSPECT_PATH:-/api/v1/auth/introspect}
+      AUTH__TOKEN_CACHE_TTL: ${AUTH__TOKEN_CACHE_TTL:-900}
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   mongodb_data:
+  redis_data:

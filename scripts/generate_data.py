@@ -7,7 +7,6 @@ Usage:
 
 import asyncio
 import random
-import sys
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
@@ -16,7 +15,6 @@ from faker import Faker
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import InsertOne, UpdateOne
 
-sys.path.insert(0, ".")
 from core.settings import settings
 
 fake = Faker()

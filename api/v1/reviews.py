@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from core.settings import settings
-from db.mongodb import get_database
+from db.mongodb import get_client, get_database
 from schemas.reviews import (
     ReviewCreate,
     ReviewLikeCreate,
@@ -15,8 +16,9 @@ from schemas.reviews import (
     SortBy,
     SortOrder,
 )
-from utils.auth import get_current_user
+from utils.auth import UserInfo, get_current_user, get_current_user_info
 from utils.helpers import document_to_dict, require_object_id
+from utils.rate_limit import limiter
 
 router = APIRouter()
 
@@ -24,7 +26,9 @@ _col = settings.mongodb.collections
 
 
 @router.get("/films/{film_id}/reviews", response_model=List[ReviewResponse])
+@limiter.limit("60/minute")
 async def get_film_reviews(
+    request: Request,
     film_id: str,
     sort_by: SortBy = Query(SortBy.published_at),
     order: SortOrder = Query(SortOrder.desc),
@@ -52,14 +56,14 @@ async def get_film_reviews(
 async def create_review(
     film_id: str,
     body: ReviewCreate,
-    user_id: str = Depends(get_current_user),
+    user_info: UserInfo = Depends(get_current_user_info),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
     now = datetime.now(timezone.utc)
     doc = {
-        "user_id": user_id,
+        "user_id": user_info.user_id,
         "film_id": film_id,
-        "author": body.author,
+        "author": user_info.username,
         "text": body.text,
         "film_rating": body.film_rating,
         "published_at": now,
@@ -72,7 +76,9 @@ async def create_review(
 
 
 @router.get("/reviews/{review_id}", response_model=ReviewResponse)
+@limiter.limit("60/minute")
 async def get_review(
+    request: Request,
     review_id: str,
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
@@ -89,6 +95,7 @@ async def upsert_review_like(
     body: ReviewLikeCreate,
     user_id: str = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
+    mongo_client: AsyncIOMotorClient = Depends(get_client),
 ):
     oid = require_object_id(review_id, "review_id")
 
@@ -98,24 +105,31 @@ async def upsert_review_like(
     now = datetime.now(timezone.utc)
     existing = await db[_col.review_likes].find_one({"user_id": user_id, "review_id": review_id})
 
-    if existing:
-        if existing["is_like"] == body.is_like:
-            return ReviewLikeResponse(**document_to_dict(existing))
-        inc = {"likes_count": 1, "dislikes_count": -1} if body.is_like else {"likes_count": -1, "dislikes_count": 1}
-        updated = await db[_col.review_likes].find_one_and_update(
-            {"_id": existing["_id"]},
-            {"$set": {"is_like": body.is_like}},
-            return_document=ReturnDocument.AFTER,
-        )
-        await db[_col.reviews].update_one({"_id": oid}, {"$inc": inc})
-        return ReviewLikeResponse(**document_to_dict(updated))
+    if existing and existing["is_like"] == body.is_like:
+        return ReviewLikeResponse(**document_to_dict(existing))
 
-    like_doc = {"review_id": review_id, "user_id": user_id, "is_like": body.is_like, "created_at": now}
-    result = await db[_col.review_likes].insert_one(like_doc)
-    like_doc["_id"] = result.inserted_id
-    inc_field = "likes_count" if body.is_like else "dislikes_count"
-    await db[_col.reviews].update_one({"_id": oid}, {"$inc": {inc_field: 1}})
-    return ReviewLikeResponse(**document_to_dict(like_doc))
+    async with await mongo_client.start_session() as session:
+        async with session.start_transaction():
+            if existing:
+                inc = {"likes_count": 1, "dislikes_count": -1} if body.is_like else {"likes_count": -1, "dislikes_count": 1}
+                updated = await db[_col.review_likes].find_one_and_update(
+                    {"_id": existing["_id"]},
+                    {"$set": {"is_like": body.is_like}},
+                    return_document=ReturnDocument.AFTER,
+                    session=session,
+                )
+                await db[_col.reviews].update_one({"_id": oid}, {"$inc": inc}, session=session)
+                return ReviewLikeResponse(**document_to_dict(updated))
+
+            like_doc = {"review_id": review_id, "user_id": user_id, "is_like": body.is_like, "created_at": now}
+            try:
+                result = await db[_col.review_likes].insert_one(like_doc, session=session)
+            except DuplicateKeyError:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Duplicate like")
+            like_doc["_id"] = result.inserted_id
+            inc_field = "likes_count" if body.is_like else "dislikes_count"
+            await db[_col.reviews].update_one({"_id": oid}, {"$inc": {inc_field: 1}}, session=session)
+            return ReviewLikeResponse(**document_to_dict(like_doc))
 
 
 @router.delete("/reviews/{review_id}/likes", status_code=status.HTTP_204_NO_CONTENT)
@@ -123,12 +137,15 @@ async def delete_review_like(
     review_id: str,
     user_id: str = Depends(get_current_user),
     db: AsyncIOMotorDatabase = Depends(get_database),
+    mongo_client: AsyncIOMotorClient = Depends(get_client),
 ):
     oid = require_object_id(review_id, "review_id")
     existing = await db[_col.review_likes].find_one({"user_id": user_id, "review_id": review_id})
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Like not found")
 
-    await db[_col.review_likes].delete_one({"_id": existing["_id"]})
-    dec_field = "likes_count" if existing["is_like"] else "dislikes_count"
-    await db[_col.reviews].update_one({"_id": oid}, {"$inc": {dec_field: -1}})
+    async with await mongo_client.start_session() as session:
+        async with session.start_transaction():
+            await db[_col.review_likes].delete_one({"_id": existing["_id"]}, session=session)
+            dec_field = "likes_count" if existing["is_like"] else "dislikes_count"
+            await db[_col.reviews].update_one({"_id": oid}, {"$inc": {dec_field: -1}}, session=session)

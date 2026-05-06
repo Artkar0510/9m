@@ -6,7 +6,7 @@ FILM_ID = "film-review-001"
 async def _create_review(client: AsyncClient, text: str = "Great movie!", rating: int = 8):
     r = await client.post(
         f"/api/v1/films/{FILM_ID}/reviews",
-        json={"author": "TestUser", "text": text, "film_rating": rating},
+        json={"text": text, "film_rating": rating},
     )
     assert r.status_code == 201
     return r.json()
@@ -15,12 +15,12 @@ async def _create_review(client: AsyncClient, text: str = "Great movie!", rating
 async def test_create_review(client: AsyncClient):
     r = await client.post(
         f"/api/v1/films/{FILM_ID}/reviews",
-        json={"author": "Alice", "text": "Amazing film!", "film_rating": 9},
+        json={"text": "Amazing film!", "film_rating": 9},
     )
     assert r.status_code == 201
     data = r.json()
     assert data["film_id"] == FILM_ID
-    assert data["author"] == "Alice"
+    assert data["author"] == "TestUser"
     assert data["text"] == "Amazing film!"
     assert data["film_rating"] == 9
     assert data["likes_count"] == 0
@@ -32,7 +32,7 @@ async def test_create_review(client: AsyncClient):
 async def test_create_review_without_rating(client: AsyncClient):
     r = await client.post(
         f"/api/v1/films/{FILM_ID}/reviews",
-        json={"author": "Bob", "text": "Interesting."},
+        json={"text": "Interesting."},
     )
     assert r.status_code == 201
     assert r.json()["film_rating"] is None

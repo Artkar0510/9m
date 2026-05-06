@@ -1,3 +1,7 @@
+import hashlib
+import json
+from dataclasses import dataclass
+
 import httpx
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -7,15 +11,36 @@ from core.settings import settings
 _bearer_scheme = HTTPBearer()
 
 
+@dataclass
+class UserInfo:
+    user_id: str
+    username: str
+
+
 def get_http_client(request: Request) -> httpx.AsyncClient:
     return request.app.state.http_client
 
 
-async def get_current_user(
+def _cache_key(token: str) -> str:
+    return f"auth:token:{hashlib.sha256(token.encode()).hexdigest()}"
+
+
+async def get_current_user_info(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
-) -> str:
+) -> UserInfo:
     token = credentials.credentials
+    redis = request.app.state.redis
+
+    if redis is not None:
+        try:
+            cached = await redis.get(_cache_key(token))
+            if cached:
+                data = json.loads(cached)
+                return UserInfo(user_id=data["user_id"], username=data["username"])
+        except Exception:
+            pass  # Redis unavailable — fall through to auth service
+
     try:
         response = await request.app.state.http_client.post(
             settings.auth.introspect_url,
@@ -42,4 +67,21 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return data["sub"]
+    user_id = data["sub"]
+    username = data.get("username") or user_id
+
+    if redis is not None:
+        try:
+            await redis.setex(
+                _cache_key(token),
+                settings.auth.token_cache_ttl,
+                json.dumps({"user_id": user_id, "username": username}),
+            )
+        except Exception:
+            pass  # Redis write failure is non-fatal
+
+    return UserInfo(user_id=user_id, username=username)
+
+
+async def get_current_user(info: UserInfo = Depends(get_current_user_info)) -> str:
+    return info.user_id

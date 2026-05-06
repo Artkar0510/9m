@@ -26,7 +26,7 @@ async def get_bookmarks(
     cursor = (
         db[_col.bookmarks]
         .find({"user_id": user_id})
-        .sort("created_at", -1)
+        .sort([("created_at", -1), ("_id", -1)])
         .skip(skip)
         .limit(limit)
     )

@@ -19,6 +19,10 @@ async def close_mongo_connection() -> None:
         _db_client.close()
 
 
+async def get_client() -> AsyncIOMotorClient:
+    return _db_client
+
+
 async def get_database() -> AsyncIOMotorDatabase:
     return _db_client[settings.mongodb.db]
 

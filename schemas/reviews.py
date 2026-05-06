@@ -17,7 +17,6 @@ class SortOrder(str, Enum):
 
 
 class ReviewCreate(BaseModel):
-    author: str
     text: str
     film_rating: Optional[int] = Field(None, ge=0, le=10)
 
@@ -36,7 +35,6 @@ class ReviewLikeResponse(BaseModel):
 
 class ReviewResponse(BaseModel):
     id: str
-    user_id: str
     film_id: str
     author: str
     text: str

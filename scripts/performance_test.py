@@ -7,14 +7,12 @@ Usage:
 
 import asyncio
 import statistics
-import sys
 import time
 from datetime import datetime, timezone
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import DESCENDING
 
-sys.path.insert(0, ".")
 from core.settings import settings
 
 ITERATIONS = 100
