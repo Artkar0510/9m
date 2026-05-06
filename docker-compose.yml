@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: ugc_mongodb
+    ports:
+      - "${MONGODB__PORT:-27017}:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGODB__DB:-ugc_db}
+
+  app:
+    build: .
+    container_name: ugc_app
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      MONGODB__HOST: ${MONGODB__HOST:-mongodb}
+      MONGODB__PORT: ${MONGODB__PORT:-27017}
+      MONGODB__DB: ${MONGODB__DB:-ugc_db}
+      MONGODB__TEST_DB: ${MONGODB__TEST_DB:-ugc_test_db}
+      MONGODB__COLLECTIONS__FILM_RATINGS: ${MONGODB__COLLECTIONS__FILM_RATINGS:-film_ratings}
+      MONGODB__COLLECTIONS__REVIEWS: ${MONGODB__COLLECTIONS__REVIEWS:-reviews}
+      MONGODB__COLLECTIONS__REVIEW_LIKES: ${MONGODB__COLLECTIONS__REVIEW_LIKES:-review_likes}
+      MONGODB__COLLECTIONS__BOOKMARKS: ${MONGODB__COLLECTIONS__BOOKMARKS:-bookmarks}
+      AUTH__SERVICE_URL: ${AUTH__SERVICE_URL:-http://auth-service:8001}
+      AUTH__INTROSPECT_PATH: ${AUTH__INTROSPECT_PATH:-/api/v1/auth/introspect}
+    depends_on:
+      - mongodb
+
+volumes:
+  mongodb_data:
